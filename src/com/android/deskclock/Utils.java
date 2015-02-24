@@ -21,12 +21,14 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.animation.TimeInterpolator;
 import android.app.AlarmManager;
+import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PorterDuff;
@@ -36,7 +38,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.preference.PreferenceManager;
+import android.provider.DocumentsContract.Document;
+import android.provider.MediaStore;
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.TextUtils;
@@ -53,20 +58,30 @@ import android.view.animation.DecelerateInterpolator;
 import android.widget.TextClock;
 import android.widget.TextView;
 
+import com.android.deskclock.provider.Alarm;
 import com.android.deskclock.stopwatch.Stopwatches;
 import com.android.deskclock.timer.Timers;
 import com.android.deskclock.worldclock.CityObj;
+import com.android.deskclock.worldclock.db.DbCities;
+import com.android.deskclock.worldclock.db.DbCity;
 
+import java.io.File;
+import java.text.Collator;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
 
 
 public class Utils {
     private final static String PARAM_LANGUAGE_CODE = "hl";
+    private final static String PROP_ALARM = "ro.config.alarm_alert";
 
     /**
      * Help URL query parameter key for the app version.
@@ -82,6 +97,11 @@ public class Utils {
      * Array of single-character day of week symbols {'S', 'M', 'T', 'W', 'T', 'F', 'S'}
      */
     private static String[] sShortWeekdays = null;
+
+    /** Content provider paths that could be passed back from documents ui **/
+    public static final String DOC_AUTHORITY = "com.android.providers.media.documents";
+    public static final String DOC_DOWNLOAD = "com.android.providers.downloads.documents";
+    public static final String DOC_EXTERNAL = "com.android.externalstorage.documents";
 
     /** Types that may be used for clock displays. **/
     public static final String CLOCK_TYPE_DIGITAL = "digital";
@@ -559,7 +579,10 @@ public class Utils {
     }
 
     public static CityObj[] loadCitiesFromXml(Context c) {
+        final Collator collator = Collator.getInstance();
         Resources r = c.getResources();
+
+        // Get list of cities defined by the app (App-defined has the prefix C)
         // Read strings array of name,timezone, id
         // make sure the list are the same length
         String[] cities = r.getStringArray(R.array.cities_names);
@@ -570,11 +593,22 @@ public class Utils {
             minLength = Math.min(cities.length, Math.min(timezones.length, ids.length));
             LogUtils.e("City lists sizes are not the same, truncating");
         }
-        CityObj[] tempList = new CityObj[minLength];
-        for (int i = 0; i < cities.length; i++) {
-            tempList[i] = new CityObj(cities[i], timezones[i], ids[i]);
+
+        List<CityObj> tempList = new ArrayList<CityObj>(minLength);
+        for (int i = 0; i < minLength; i++) {
+            tempList.add(new CityObj(cities[i], timezones[i], ids[i]));
         }
-        return tempList;
+
+        // Get the list of user-defined cities (User-defined has the prefix UD)
+        List<DbCity> dbcities = DbCities.getCities(c.getContentResolver());
+        for (int i = 0; i < dbcities.size(); i++) {
+            DbCity dbCity = dbcities.get(i);
+            CityObj city = new CityObj(dbCity.name, dbCity.tz, "UD" + dbCity.id);
+            city.mUserDefined = true;
+            tempList.add(city);
+        }
+
+        return tempList.toArray(new CityObj[tempList.size()]);
     }
 
     /**
@@ -635,5 +669,79 @@ public class Utils {
             sShortWeekdays = shortWeekdays;
         }
         return sShortWeekdays;
+    }
+
+    public static String getTitleColumnNameForUri(Uri uri) {
+        if (uri.isPathPrefixMatch(MediaStore.Audio.Playlists.EXTERNAL_CONTENT_URI)) {
+            return MediaStore.Audio.Playlists.NAME;
+        }
+        if (DOC_EXTERNAL.equals(uri.getAuthority())) {
+            return Document.COLUMN_DISPLAY_NAME;
+        }
+        return MediaStore.Audio.Media.TITLE;
+    }
+
+    public static boolean isRingToneUriValid(Context context, Uri uri) {
+        if (uri == null) {
+            return false;
+        }
+
+        if (uri.equals(AlarmMultiPlayer.RANDOM_URI) || uri.equals(Alarm.NO_RINGTONE_URI)) {
+            return true;
+        } else if (uri.getScheme().contentEquals("file")) {
+            File f = new File(uri.getPath());
+            if (f.exists()) {
+                return true;
+            }
+        } else if (uri.getScheme().contentEquals("content")) {
+            Cursor cursor = null;
+            try {
+                cursor = context.getContentResolver().query(uri,
+                        new String[] {getTitleColumnNameForUri(uri)}, null, null, null);
+                if (cursor != null && cursor.getCount() > 0) {
+                    return true;
+                }
+            } catch (Exception e) {
+                LogUtils.e("Get ringtone uri Exception: e.toString=" + e.toString());
+            } finally {
+                if (cursor != null) {
+                    cursor.close();
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public static Uri getSystemDefaultAlarm(Context c) {
+        String defaultAlarm = SystemProperties.get(PROP_ALARM, null);
+        if (defaultAlarm == null) {
+            defaultAlarm = ""; //If system prop isn't set return any alarm
+        }
+
+        // The system property is a file name so we query the Data field to find the alarm
+        Cursor cursor = null;
+        try {
+            cursor = c.getContentResolver().query(
+                    MediaStore.Audio.Media.INTERNAL_CONTENT_URI,
+                    new String[] { MediaStore.Audio.Media._ID},
+                    MediaStore.Audio.Media.DATA + " LIKE ? AND "
+                        + MediaStore.Audio.Media.ALBUM + " = 'alarms'",
+                    new String[] {"%" + defaultAlarm},
+                    null);
+
+            if (cursor != null && cursor.getCount() > 0 && cursor.moveToFirst()) {
+                long id = cursor.getLong(cursor.getColumnIndex(MediaStore.Audio.Media._ID));
+                return ContentUris.withAppendedId(MediaStore.Audio.Media.INTERNAL_CONTENT_URI, id);
+            }
+        } catch (Exception e) {
+            LogUtils.e("Cannot find default alarm ringtone: " + e.toString());
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        return Alarm.NO_RINGTONE_URI;
     }
 }

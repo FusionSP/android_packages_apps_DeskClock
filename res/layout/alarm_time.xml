@@ -77,7 +77,7 @@
                 android:layout_gravity="center_vertical|start"
                 android:text="@string/alarm_repeat"
                 android:textSize="16sp"
-                android:paddingStart="12dip"
+                android:paddingStart="16dip"
                 android:textColor="@color/clock_white" />
 
             <LinearLayout
@@ -90,65 +90,61 @@
                 <!-- Day buttons are put here programatically -->
             </LinearLayout>
 
-            <LinearLayout
+            <TextView
+                android:id="@+id/choose_ringtone"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="48dip"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:paddingStart="4dip"
+                android:drawablePadding="20dp"
+                android:drawableStart="@drawable/ic_ringtone"
+                android:ellipsize="marquee"
                 android:gravity="center_vertical"
-                android:orientation="horizontal" >
+                android:marqueeRepeatLimit="marquee_forever"
+                android:scrollHorizontally="true"
+                android:singleLine="true"
+                android:textAlignment="viewStart"
+                android:textSize="16sp"
+                android:textColor="@color/clock_white"/>
 
-                <TextView
-                    android:id="@+id/choose_ringtone"
-                    android:layout_width="0dip"
-                    android:layout_height="48dip"
-                    android:layout_weight="1"
-                    android:layout_alignParentStart="true"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:clickable="true"
-                    android:paddingStart="4dip"
-                    android:drawablePadding="16dp"
-                    android:drawableStart="@drawable/ic_ringtone"
-                    android:ellipsize="marquee"
-                    android:gravity="center_vertical"
-                    android:marqueeRepeatLimit="marquee_forever"
-                    android:scrollHorizontally="true"
-                    android:singleLine="true"
-                    android:textAlignment="viewStart"
-                    android:textSize="16sp"
-                    android:textColor="@color/clock_white"
-                    />
-            </LinearLayout>
-
-            <LinearLayout
+            <TextView
+                android:id="@+id/choose_profile"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:clickable="true"
+                android:paddingStart="4dip"
+                android:drawablePadding="20dp"
+                android:drawableStart="@drawable/ic_profile"
+                android:ellipsize="marquee"
                 android:gravity="center_vertical"
-                android:orientation="horizontal" >
+                android:marqueeRepeatLimit="marquee_forever"
+                android:scrollHorizontally="true"
+                android:singleLine="true"
+                android:textAlignment="viewStart"
+                android:textSize="16sp"
+                android:textColor="@color/clock_white" />
 
-                <CheckBox
-                    android:id="@+id/increasing_volume_onoff"
-                    android:layout_width="wrap_content"
-                    android:layout_height="48dip"
-                    android:layout_alignParentEnd="true"
-                    android:layout_centerVertical="true"
-                    android:includeFontPadding="false"
-                    android:text="@string/alarm_increasing_volume"
-                    android:paddingStart="12dip"
-                    android:paddingEnd="16dip"
-                    android:textSize="16sp"
-                    android:textColor="@color/white" />
+            <CheckBox
+                android:id="@+id/increasing_volume_onoff"
+                android:layout_width="wrap_content"
+                android:layout_height="48dip"
+                android:includeFontPadding="false"
+                android:text="@string/alarm_increasing_volume"
+                android:paddingStart="16dip"
+                android:textSize="16sp"
+                android:textColor="@color/white" />
 
-                <CheckBox
-                    android:id="@+id/vibrate_onoff"
-                    android:layout_width="wrap_content"
-                    android:layout_height="48dip"
-                    android:layout_alignParentEnd="true"
-                    android:layout_centerVertical="true"
-                    android:includeFontPadding="false"
-                    android:text="@string/alarm_vibrate"
-                    android:paddingStart="12dip"
-                    android:textSize="16sp"
-                    android:textColor="@color/white" />
-            </LinearLayout>
+            <CheckBox
+                android:id="@+id/vibrate_onoff"
+                android:layout_width="wrap_content"
+                android:layout_height="48dip"
+                android:includeFontPadding="false"
+                android:text="@string/alarm_vibrate"
+                android:paddingStart="16dip"
+                android:textSize="16sp"
+                android:textColor="@color/white" />
 
             <TextView
                 android:id="@+id/edit_label"

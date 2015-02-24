@@ -19,6 +19,7 @@ import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -120,6 +121,13 @@ public final class AlarmStateManager extends BroadcastReceiver {
     // Buffer time in seconds to fire alarm instead of marking it missed.
     public static final int ALARM_FIRE_BUFFER = 15;
 
+    private static boolean sRtcPowerUp = false;
+    private static final String ACTION_POWER_ON_ALERT =
+            "org.codeaurora.poweronalert.action.POWER_ON_ALERT";
+    private static final String ALARM_POWER_OFF_ACTION =
+            "org.codeaurora.poweronalert.action.ALARM_POWER_OFF";
+    private static final String FIRST_ALARM_FLAG = "first_alarm";
+
     public static int getGlobalIntentId(Context context) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         return prefs.getInt(ALARM_GLOBAL_ID_EXTRA, -1);
@@ -202,6 +210,7 @@ public final class AlarmStateManager extends BroadcastReceiver {
             AlarmInstance instance, Integer state) {
         Intent intent = AlarmInstance.createIntent(context, AlarmStateManager.class, instance.mId);
         intent.setAction(CHANGE_STATE_ACTION);
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
         intent.addCategory(tag);
         intent.putExtra(ALARM_GLOBAL_ID_EXTRA, getGlobalIntentId(context));
         if (state != null) {
@@ -229,10 +238,19 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 stateChangeIntent, PendingIntent.FLAG_UPDATE_CURRENT);
 
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        Intent stateChangePowerOffIntent = createStateChangeIntent(context, ALARM_MANAGER_TAG,
+                instance, AlarmInstance.POWER_OFF_ALARM_STATE);
+        PendingIntent pendingPowerOffIntent = PendingIntent.getBroadcast(context,
+                instance.hashCode(), stateChangePowerOffIntent, PendingIntent.FLAG_ONE_SHOT);
         if (Utils.isKitKatOrLater()) {
             am.setExact(AlarmManager.RTC_WAKEUP, timeInMillis, pendingIntent);
+
+            am.setExact(AlarmManager.RTC_POWEROFF_WAKEUP, instance.getAlarmTime().getTimeInMillis(),
+                    pendingPowerOffIntent);
         } else {
             am.set(AlarmManager.RTC_WAKEUP, timeInMillis, pendingIntent);
+            am.set(AlarmManager.RTC_POWEROFF_WAKEUP, instance.getAlarmTime().getTimeInMillis(),
+                    pendingPowerOffIntent);
         }
     }
 
@@ -250,7 +268,14 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 createStateChangeIntent(context, ALARM_MANAGER_TAG, instance, null),
                 PendingIntent.FLAG_UPDATE_CURRENT);
 
+        PendingIntent pendingPowerOffIntent = PendingIntent.getBroadcast(context,
+                instance.hashCode(),
+                createStateChangeIntent(context, ALARM_MANAGER_TAG, instance, null),
+                PendingIntent.FLAG_ONE_SHOT);
+
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+
+        am.cancel(pendingPowerOffIntent);
         am.cancel(pendingIntent);
     }
 
@@ -423,31 +448,6 @@ public final class AlarmStateManager extends BroadcastReceiver {
     }
 
     /**
-     * This will set the alarm instance to the one minute late and update
-     * the application notifications and schedule any state changes that need
-     * to occur in the future.
-     *
-     * @param context application context
-     * @param instance to set state to
-     */
-    public static void setOneminutelate(Context context, AlarmInstance instance) {
-        AlarmService.stopAlarm(context, instance);
-        int snoozeMinutes = 1;
-
-        // Set alarm time to next minute.Update alarm state and new alarm time in db.
-        Calendar newAlarmTime = Calendar.getInstance();
-        newAlarmTime.add(Calendar.MINUTE, snoozeMinutes);
-        instance.setAlarmTime(newAlarmTime);
-        instance.mAlarmState = AlarmInstance.SNOOZE_STATE;
-        AlarmInstance.updateInstance(context.getContentResolver(), instance);
-        scheduleInstanceStateChange(context, instance.getAlarmTime(),
-                instance, AlarmInstance.FIRED_STATE);
-
-        // Instance time changed, so find next alarm that will fire and notify system
-        updateNextAlarm(context);
-    }
-
-    /**
      * This will set the alarm instance to the MISSED_STATE and update
      * the application notifications and schedule any state changes that need
      * to occur in the future.
@@ -504,6 +504,14 @@ public final class AlarmStateManager extends BroadcastReceiver {
 
         // Instance is not valid anymore, so find next alarm that will fire and notify system
         updateNextAlarm(context);
+        if (isPowerOffAlarm(context)) {
+            try {
+                context.startActivity(new Intent(ACTION_POWER_ON_ALERT)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (ActivityNotFoundException ex) {
+                // do nothing, the powerOnAlert app couldn't be found.
+            }
+        }
     }
 
     /**
@@ -690,6 +698,9 @@ public final class AlarmStateManager extends BroadcastReceiver {
                 break;
             case AlarmInstance.MISSED_STATE:
                 setMissedState(context, instance);
+                if (isPowerOffAlarm(context)) {
+                    context.sendBroadcast(new Intent(ALARM_POWER_OFF_ACTION));
+                }
                 break;
             case AlarmInstance.DISMISSED_STATE:
                 setDismissState(context, instance);
@@ -756,13 +767,24 @@ public final class AlarmStateManager extends BroadcastReceiver {
             if (alarmState >= 0) {
                 setAlarmState(context, instance, alarmState);
             } else {
+                // No need to register instance again when alarmState
+                // equals POWER_OFF_ALARM_STATE. POWER_OFF_ALARM_STATE
+                // is an invalid state for rtc power off alarm.
+                if (alarmState == AlarmInstance.POWER_OFF_ALARM_STATE)
+                {
+                    return;
+                }
                 registerInstance(context, instance, true);
             }
         } else if (SHOW_AND_DISMISS_ALARM_ACTION.equals(action)) {
             Uri uri = intent.getData();
             AlarmInstance instance = AlarmInstance.getInstance(context.getContentResolver(),
                     AlarmInstance.getId(uri));
-
+            if (instance == null) {
+                // Not a big deal, but it shouldn't happen
+                LogUtils.e("Can not show and dismiss alarm for unknown instance: " + uri);
+                return;
+            }
             long alarmId = instance.mAlarmId == null ? Alarm.INVALID_ID : instance.mAlarmId;
             Intent viewAlarmIntent = Alarm.createIntent(context, DeskClock.class, alarmId);
             viewAlarmIntent.putExtra(DeskClock.SELECT_TAB_INTENT_EXTRA, DeskClock.ALARM_TAB_INDEX);
@@ -774,49 +796,36 @@ public final class AlarmStateManager extends BroadcastReceiver {
     }
 
     /**
-     * Make the alarm snooze for one second.If the phone is still busy in call,
-     * this method will be called again to snooze for another one second.
+     * Make the alarm snooze based on the snooze interval in settings.
      * If the phone is not busy in call anymore, this method will not be
-     * called, and the alarm will wake up within one second.
+     * called, and the alarm will wake up based on snooze interval.
      */
     private void snooze(Context context, Intent intent, AlarmInstance instance) {
-        Calendar currentTime = Calendar.getInstance();
-        if ((currentTime.get(Calendar.SECOND) < 57)
-                && (currentTime.get(Calendar.MINUTE) == instance.mMinute)) {
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException ex) {}
-            Uri uri = intent.getData();
-            AlarmInstance newInstance = AlarmInstance.getInstance(context.getContentResolver(),
-                    AlarmInstance.getId(uri));
-            if (newInstance == null) {
-                // If AlarmInstance is turn to null,return.
-                return;
-            }
-
-            // Notify the user that the alarm has been snoozed.
-            Intent cancelSnooze = createStateChangeIntent(context, ALARM_MANAGER_TAG, newInstance,
-                    AlarmInstance.DISMISSED_STATE);
-            PendingIntent broadcast = PendingIntent.getBroadcast(context, instance.hashCode(),
-                    cancelSnooze, 0);
-            String label = newInstance.getLabelOrDefault(context);
-            label = context.getString(R.string.alarm_notify_snooze_label, label);
-            NotificationManager nm = (NotificationManager) context
-                    .getSystemService(Context.NOTIFICATION_SERVICE);
-            Notification n = new Notification(R.drawable.stat_notify_alarm, label, 0);
-            n.setLatestEventInfo(context, label,
-                    context.getString(R.string.alarm_notify_snooze_text,
-                            AlarmUtils.getFormattedTime(context, instance.getAlarmTime())),
-                    broadcast);
-            n.flags |= Notification.FLAG_AUTO_CANCEL | Notification.FLAG_ONGOING_EVENT;
-            nm.notify(instance.hashCode(), n);
-
-            scheduleInstanceStateChange(context, newInstance.getAlarmTime(), newInstance,
-                    AlarmInstance.FIRED_STATE);
-        } else {
-            // when alarm is about to overtime,let it snooze to next minute
-            setOneminutelate(context, instance);
+        Uri uri = intent.getData();
+        AlarmInstance newInstance = AlarmInstance.getInstance(context.getContentResolver(),
+                AlarmInstance.getId(uri));
+        if (newInstance == null) {
+            // If AlarmInstance is turn to null,return.
+            return;
         }
+
+        // Notify the user that the alarm has been snoozed.
+        Intent cancelSnooze = createStateChangeIntent(context, ALARM_MANAGER_TAG, newInstance,
+                AlarmInstance.DISMISSED_STATE);
+        PendingIntent broadcast = PendingIntent.getBroadcast(context, instance.hashCode(),
+                cancelSnooze, 0);
+        String label = newInstance.getLabelOrDefault(context);
+        label = context.getString(R.string.alarm_notify_snooze_label, label);
+        NotificationManager nm = (NotificationManager) context
+                .getSystemService(Context.NOTIFICATION_SERVICE);
+        Notification n = new Notification(R.drawable.stat_notify_alarm, label, 0);
+        n.setLatestEventInfo(context, label,
+                context.getString(R.string.alarm_notify_snooze_text,
+                        AlarmUtils.getFormattedTime(context, instance.getAlarmTime())),
+                broadcast);
+        n.flags |= Notification.FLAG_AUTO_CANCEL | Notification.FLAG_ONGOING_EVENT;
+        nm.notify(instance.hashCode(), n);
+        setAlarmState(context, instance, AlarmInstance.SNOOZE_STATE);
     }
 
     /**
@@ -825,5 +834,23 @@ public final class AlarmStateManager extends BroadcastReceiver {
      */
     public static Intent createIndicatorIntent(Context context) {
         return new Intent(context, AlarmStateManager.class).setAction(INDICATOR_ACTION);
+    }
+
+    public static void setRtcPowerUp(Context context, boolean isRtcPowerUp) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        prefs.edit().putBoolean(FIRST_ALARM_FLAG, isRtcPowerUp).commit();
+    }
+
+    /**
+     * @return true if the alarm is a power off alarm
+     */
+    public static boolean isPowerOffAlarm(Context context) {
+        boolean isPoAlarm = false;
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        if (prefs.getBoolean(FIRST_ALARM_FLAG, false)) {
+            isPoAlarm = true;
+            setRtcPowerUp(context,false);
+        }
+        return isPoAlarm;
     }
 }
